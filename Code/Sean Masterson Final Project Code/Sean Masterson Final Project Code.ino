@@ -1,19 +1,19 @@
+#include <dht.h>
+// PINS FOR WATER SENSOR -- 1 Analog pin
 
-// PINS FOR WATER SENSOR
+// PINS FOR STEPPER MOTOR -- 4 digital pins
 
-// PINS FOR STEPPER MOTOR
+// PINS FOR LCD DISPLAY -- 6 digital pins
 
-// PINS FOR LCD DISPLAY
+// PINS FOR REALTIME CLOCK -- 2 digital pins
 
-// PINS FOR REALTIME CLOCK
+// PINS FOR TEMPERATURE SENSOR -- 1 digital pin
 
-// PINS FOR TEMPERATURE SENSOR
+// PINS FOR FAN -- 3 digital pins
+ 
+// PINS FOR LEDs -- 4 digital pins
 
-// PINS FOR FAN
-
-// PINS FOR LEDs
-
-// PINS FOR BUTTONS
+// PINS FOR BUTTONS -- 3 digital pins
 
 enum cooler_state {DISABLED, IDLE, RUNNING, ERROR};
 
