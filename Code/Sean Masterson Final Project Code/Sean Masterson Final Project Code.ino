@@ -1,14 +1,20 @@
+#include <uRTCLib.h>
 #include <dht.h>
 #include <Stepper.h>
 #include <LiquidCrystal.h>
-#include <DS3231.h>
+
+
+
+
 
 #define RDA 0x80
 #define TBE 0x20 
 
+
+
 //GLOBAL CONSTANTS
-const int TEMP_THRESHOLD = 72;
-const int WATER_THRESHOLD = 5;
+const int TEMP_THRESHOLD = 25;
+const int WATER_THRESHOLD = 150;
 
 
 // PINS FOR WATER SENSOR -- 1 Analog pin
@@ -22,8 +28,8 @@ const int StepperPin1 = 22;
 const int StepperPin2 = 23;
 const int StepperPin3 = 24;
 const int StepperPin4 = 25;
-const int StepsPerRevolution  = 2048;
-const int VentSpeed = 15;
+const int StepsPerRevolution  = 200;
+const int VentSpeed = 60;
 
 // PINS FOR LCD DISPLAY -- 6 digital pins
 const int LCDRS = 26;
@@ -50,19 +56,18 @@ volatile unsigned char *fan_DDRB  = (unsigned char *) 0x24;      // PB7, 6, 5 Pi
 volatile unsigned char *LED_DDRH  = (unsigned char *) 0x101;   
 volatile unsigned char *LED_PORTH     = (unsigned char *) 0x102;  // PH 6, 5, 4, 3 , Pins, 9, 8, 7, 6
 
-// BUTTON PINS -- 3 Start/Stop 
-volatile unsigned char *BUTTON_PINE  = (unsigned char *) 0x2C;  
-volatile unsigned char *BUTTON_DDRE  = (unsigned char *) 0x2D; // PE5, PE4, PE1 Pins 3, 2,1 -- RESET, START, STOP
-//BUTTON PINS -- Vent Controls
-volatile unsigned char *BUTTON_PINJ  = (unsigned char *) 0x103;  
-volatile unsigned char *BUTTON_DDRJ  = (unsigned char *) 0x104; // PJ1, PJ0, Pins 14, 15
+//BUTTON PINS RESET BUTTON
+volatile unsigned char *BUTTON_PING  = (unsigned char *) 0x32;  
+volatile unsigned char *BUTTON_DDRG  = (unsigned char *) 0x33; // PG5
 
-//UART Registers
- volatile unsigned char *myUCSR0A = (unsigned char *)0x00C0;
- volatile unsigned char *myUCSR0B = (unsigned char *)0x00C1;
- volatile unsigned char *myUCSR0C = (unsigned char *)0x00C2;
- volatile unsigned int  *myUBRR0  = (unsigned int *) 0x00C4;
- volatile unsigned char *myUDR0   = (unsigned char *)0x00C6;
+// BUTTON PINS -- 2 Start/Stop 
+volatile unsigned char *BUTTON_PINE  = (unsigned char *) 0x2C;  
+volatile unsigned char *BUTTON_DDRE  = (unsigned char *) 0x2D; // PE5, PE4, PE1 Pins  2,1 -- RESET, START, STOP
+//BUTTON PINS -- Vent Controls
+volatile unsigned char *BUTTON_PINL  = (unsigned char *) 0x109;  
+volatile unsigned char *BUTTON_DDRL  = (unsigned char *) 0x10A; // PL7, PL6, Pins 42, 43
+
+
 
  //Timer Registers
 volatile unsigned char *myTCCR1A  = (unsigned char *) 0x80;
@@ -78,10 +83,14 @@ volatile unsigned char* my_ADCSRB = (unsigned char*) 0x7B;
 volatile unsigned char* my_ADCSRA = (unsigned char*) 0x7A;
 volatile unsigned int* my_ADC_DATA = (unsigned int*) 0x78;
 
+volatile int* secondCounter;
+volatile bool* minutePassed;
+volatile bool* checkTime;
+
 dht DHT; // temperature sensor
 Stepper ventMotor(StepsPerRevolution,StepperPin1,StepperPin2,StepperPin3,StepperPin4); // stepper motor for vent
 LiquidCrystal LCD(LCDRS,LCDENABLE,LCDD4,LCDD5,LCDD6,LCDD7);  //LCD display
-DS3231 RTClock; // Real Time Clock
+uRTCLib RTClock(0x68); // Real Time Clock
 
 enum cooler_state {DISABLED, IDLE, RUNNING, ERROR};
 
@@ -89,34 +98,56 @@ volatile cooler_state state = DISABLED;
 cooler_state previousState = DISABLED; // to check for change in state
 char previousMinute = '\0';
 
-void setup() {
-  // put your setup code here, to run once:
-  U0Init(9600);
+//UART Registers
+ volatile unsigned char *myUCSR0A = (unsigned char *)0x00C0;
+ volatile unsigned char *myUCSR0B = (unsigned char *)0x00C1;
+ volatile unsigned char *myUCSR0C = (unsigned char *)0x00C2;
+ volatile unsigned int  *myUBRR0  = (unsigned int *) 0x00C4;
+ volatile unsigned char *myUDR0   = (unsigned char *)0x00C6;
 
-    // reset the TOV flag
+void setup()
+{
+  *secondCounter = 0;
+ *minutePassed = false;
+  *checkTime = true;
+   U0init(9600);
+//Serial.begin(9600);
+       // reset the TOV flag
   *myTIFR1 |= 0x01;
   
   // enable the TOV interrupt
+  //*myTIMSK1 |= 0x01;
   *myTIMSK1 |= 0x01;
-
+    // Load the Count
+  *myTCNT1 =  (unsigned int) (65535 -  (unsigned long) 3036); // 65535-3036 = 1 second w/ prescaler of 256
+    // Start the Timer
+  *myTCCR1B |=   0b00000100;
   LCD.begin(16,2);
   ventMotor.setSpeed(VentSpeed);
 
   adc_init();
-
   // initialize pins
   *fan_DDRB |= 0b11100000; // set PB7,6,5 to output
-  *LED_DDRH |= 0b01111000; // set PH6, 5, 4, 3 to output
-  *BUTTON_DDRE &= 0b11001101;  // set PE5, 4, 1 to input
-  *BUTTON_DDRJ &= 0b11111100; // set PJ1, 0 to input
 
-  PCICR |= 0b00000100;		//Enable interrupt vector PCIE2
-  PCMSK2 |= 0b00000100;		//  set digital pin 2 to be monitored by ISR
+  *LED_DDRH |= 0b01111000; // set PH6, 5, 4, 3 to output
+  *BUTTON_DDRG &= 0b00100000;// set PG5 to input
+  *BUTTON_DDRE &= 0b11001100;  // set PE5, 4, to input
+  *BUTTON_DDRL &= 0b11000000; // set PL7, PL6, to input
+
+
+ PCICR |= 0b00000100;		//Enable interrupt vector PCIE2
+ PCMSK2 |= 0b00000100;		//  set digital pin 2 to be monitored by ISR
+ 	//RTClock.set(0, 45, 17, 3, 9, 5, 23);
 }
 
 void loop() 
 {
+  if(*checkTime)
+  {
+   RTClock.refresh();
+  }
   // Check for change in state
+
   if (state != previousState)
   {
     // REPORT TIME WITH RT CLOCK
@@ -124,39 +155,54 @@ void loop()
   }
   previousState = state; //set state for next loop
 
-  if(state != DISABLED)
+    if(*BUTTON_PINE & 0b00010000) // IF STOP BUTTON IS EVER PRESSED
+    {
+      state = DISABLED;//SET STATE TO DISABLED
+    } 
+
+  if(state != DISABLED && state!= ERROR)
   {
     //RECORD HUMIDITY/TEMPERATURE
     int chk = DHT.read11(DHTPin);
-    
+    writeTemperature();// UPDATE LCD
     //IF A MINUTE HAS PASSED
-    if(RTClock.getMinute() != previousMinute && previousMinute != '\0')
+   if(*minutePassed)
     {
-      writeTemperature();// UPDATE LCD
+      
     }
-    previousMinute = RTClock.getMinute();
+
     
     // IF LEVELS ARE TOO LOW
     if(adc_read(WaterSensorPin) < WATER_THRESHOLD)
     {    
      state = ERROR; // SET STATE TO ERROR
     }
-    //HANDLE CHANGES TO VENT CONTROLS // PJ1, PJ0, Pins 14, 15
-    if(*BUTTON_PINJ & 0x01)
+    //HANDLE CHANGES TO VENT CONTROLS // PL7, PL6
+    if(*BUTTON_PINL & 0b10000000)
     {
+
+    //  ventMotor.step(StepsPerRevolution);//TURN VENT LEFT
+    }
+    else if(*BUTTON_PINL & 0b01000000)
+    {
+   //  ventMotor.step(-StepsPerRevolution);//TURN VENT RIGHT
+    }   
+  }
+  if(state != ERROR)
+  {
+          //HANDLE CHANGES TO VENT CONTROLS // PL7, PL6
+    if(*BUTTON_PINL & 0b10000000)
+    {
+      Serial.print("LEFT");
       ventMotor.step(StepsPerRevolution);//TURN VENT LEFT
     }
-    else if(*BUTTON_PINJ & 0x02)
+    else if(*BUTTON_PINL & 0b01000000)
     {
+      Serial.print("RIGHT");
       ventMotor.step(-StepsPerRevolution);//TURN VENT RIGHT
-    } 
-    //IF STOP BUTTON IS PUSHED
-    else if(*BUTTON_PINE & 0x02)
-    {
-      state = DISABLED;//SET STATE TO DISABLED
-    } 
-      
+    }  
   }
+
   if(state != RUNNING)
   {
     //TURN OFF FAN MOTOR  // PB7, 6, 5
@@ -166,15 +212,20 @@ void loop()
   switch(state)
   {
     case DISABLED: 
+      LCD.clear();
       //TURN ON YELLOW LED
       *LED_PORTH  |= 0b01000000;       // PH6
       // TURN OFF REMAINING LEDs
       *LED_PORTH  &= 0b11000111;
       //ISR WILL TRIGGER WHEN START BUTTON IS PRESSED TO TURN SYSTEM ON
+      if(*BUTTON_PINE & 0b00100000)
+      {     
+       state = IDLE;        
+      }
       break;
     case IDLE:
       //TURN ON GREEN LED
-      *LED_PORTH  |= 0b001000000;       // PH5
+      *LED_PORTH  |= 0b00100000;       // PH5
       // TURN OFF REMAINING LEDs
       *LED_PORTH  &= 0b10100111;
       //IF TEMP IS ABOVE THRESHOLD
@@ -183,26 +234,28 @@ void loop()
        state = RUNNING; //SET STATE TO RUNNING
       }
       break;
-    case ERROR:
+    case ERROR:      
       //TURN ON RED LED
-      *LED_PORTH  |= 0b00010000;       // PH4
+      *LED_PORTH  |= 0b00001000;       // PH4
       // TURN OFF REMAINING LEDs
-      *LED_PORTH  &= 0b10010111;
+      *LED_PORTH  &= 0b10001111;
       //WRITE ERROR MESSAGE TO LCD
+      LCD.clear();
+      LCD.setCursor(0,0);
       LCD.print("ERROR: Water Low");  
       //IF RESET BUTTON IS PRESSED
-      if(*BUTTON_PINE & 0b00100000)
+      if(*BUTTON_PING & 0b00100000)
       {
        state = IDLE; //CHANGE STATE TO IDLE
       }
       break;
     case RUNNING:
       //TURN ON BLUE LED
-      *LED_PORTH  |= 0b00001000;       // PH3
+      *LED_PORTH  |= 0b00010000;       // PH3
       // TURN OFF REMAINING LEDs
-      *LED_PORTH  &= 0b10001000;
+      *LED_PORTH  &= 0b10010000;
       //TURN ON FAN MOTOR
-      *fan_portB |= 0b11000000;
+      *fan_portB |= 0b10100000;
       //IF TEMPERATURE IS BELOW THRESHOLD
       if(DHT.temperature < TEMP_THRESHOLD)
       {
@@ -212,8 +265,7 @@ void loop()
   }
 }
 
-
-void U0Init(int U0baud)
+void U0init(int U0baud)
 {
  unsigned long FCPU = 16000000;
  unsigned int tbaud;
@@ -223,19 +275,6 @@ void U0Init(int U0baud)
  *myUCSR0B = 0x18;
  *myUCSR0C = 0x06;
  *myUBRR0  = tbaud;
-}
-unsigned char kbhit()
-{
-  return *myUCSR0A & RDA;
-}
-unsigned char getChar()
-{
-  return *myUDR0;
-}
-void putChar(unsigned char U0pdata)
-{
-  while((*myUCSR0A & TBE)==0);
-  *myUDR0 = U0pdata;
 }
 
 void adc_init()
@@ -278,21 +317,26 @@ unsigned int adc_read(unsigned char adc_channel_num)
   return *my_ADC_DATA;
 }
 
-void ReportStateChange(cooler_state newstate, cooler_state oldstate)
+void ReportStateChange(cooler_state newstate, cooler_state oldstate)//, DateTime DTime)
 {
-    putChar("State change from ");
+    myprint("State change from ");
     printState(oldstate);
-    putChar(" to ");
-    printState(newstate);    
-    putChar(" occurred at ");      
-    putChar(RTClock.getHour(h12Flag, pmFlag));
-    putChar(":");
-    putChar(RTClock.getMinute());
-    putChar(":");
-    putChar(RTClock.getSecond());
-    putChar(" on ");
-    putChar(RTClock.getDate());
-    putChar('\n');
+    myprint(" to ");
+    printState(newstate); 
+    myprint("\n");       
+    myprint(" occurred at ");    
+    myprint((String)RTClock.hour());
+    myprint(":");
+    myprint((String)RTClock.minute());
+    myprint(":");
+    myprint((String)RTClock.second());
+    myprint(" on ");
+    myprint((String)RTClock.month());
+    myprint("/");
+    myprint((String)RTClock.day());
+    myprint("/");
+    myprint((String)RTClock.year());    
+    myprint("\n");
 }
 
 void printState(cooler_state cstate)
@@ -300,34 +344,89 @@ void printState(cooler_state cstate)
       switch(cstate)
     {
       case IDLE:
-        putChar("IDLE");
+        myprint("IDLE");
         break;
       case DISABLED:
-        putChar("DISABLED");
+        myprint("DISABLED");
         break;
       case ERROR:
-        putChar("ERROR");
+        myprint("ERROR");
         break;
       case RUNNING:
-        putChar("RUNNING");
+        myprint("RUNNING");
         break;       
     } 
 }
 
 void writeTemperature()
 {
-    LCD.print("\n\nHumidity: ");
+    LCD.clear();
+    LCD.setCursor(0,0);
+    LCD.print("Humidity: ");
     LCD.print(DHT.humidity);
-    LCD.print('\n');
+    LCD.setCursor(0,1);
     LCD.print("Temperature: ");
     LCD.print(DHT.temperature);
-    LCD.print('\n');    
+}
+
+
+
+unsigned char U0kbhit()
+{
+  return *myUCSR0A & RDA;
+}
+unsigned char U0getchar()
+{
+  return *myUDR0;
+}
+void U0putchar(unsigned char U0pdata)
+{
+  while((*myUCSR0A & TBE)==0);
+  *myUDR0 = U0pdata;
+}
+
+void myprint(String string)
+{
+for (auto c : string)
+  {
+    U0putchar(c);
+  }  
+}
+
+
+
+void myprintln(String string)
+{
+  myprint(string);
+  U0putchar('\n');  
 }
 
 ISR (PCINT2_vect) 
 {
-  if(*BUTTON_PINE & 0b00010000)
-  {
     state = IDLE;
-  }     
-} 
+
+}
+
+ISR(TIMER1_OVF_vect)
+{
+  // Stop the Timer
+  *myTCCR1B &=0xF8;
+
+  *checkTime = !checkTime;
+  *secondCounter ++;
+  if(*secondCounter == 60)
+  {
+    *secondCounter = 0;
+    *minutePassed = true;
+  }
+  else
+  {
+    *minutePassed = false;
+  }
+  // Load the Count
+  *myTCNT1 =  (unsigned int) (65535 -  (unsigned long) 3036); // 65535-3036 = 1 second w/ prescaler of 256
+    // Start the Timer
+  *myTCCR1B |=   0b00000100;
+
+
+}
