@@ -1,3 +1,7 @@
+/*UNR CPE 301 Final Project
+ * Sean Masterson
+ * With code from previous assignments given by the instructor.
+ */
 #include <uRTCLib.h>
 #include <dht.h>
 #include <Stepper.h>
@@ -111,7 +115,7 @@ void setup()
  *minutePassed = false;
   *checkTime = true;
    U0init(9600);
-//Serial.begin(9600);
+
        // reset the TOV flag
   *myTIFR1 |= 0x01;
   
@@ -193,12 +197,10 @@ void loop()
           //HANDLE CHANGES TO VENT CONTROLS // PL7, PL6
     if(*BUTTON_PINL & 0b10000000)
     {
-      Serial.print("LEFT");
       ventMotor.step(StepsPerRevolution);//TURN VENT LEFT
     }
     else if(*BUTTON_PINL & 0b01000000)
     {
-      Serial.print("RIGHT");
       ventMotor.step(-StepsPerRevolution);//TURN VENT RIGHT
     }  
   }
